@@ -17,15 +17,33 @@ permissions:
 
 jobs:
   codex:
+    # TRUST GATE (2026-07-29). issue_comment, pull_request_review_comment and
+    # issues all run in BASE-repo context with repository secrets and a
+    # write-scoped token, regardless of who authored the text — there is no
+    # fork downgrade the way there is on pull_request. On a public repository
+    # that means any stranger commenting '@codex' could start this job.
+    #
+    # openai/codex-action already refuses to run the agent for a user without
+    # repository write access, so the model was never reachable. But that check
+    # lives inside the action, i.e. AFTER checkout, setup-node and `npm ci`
+    # have already burned a 60-minute-timeout runner on an unauthenticated
+    # request. author_association is evaluated by GitHub before the job starts,
+    # so the trust decision happens before any compute is spent.
+    #
+    # OWNER/MEMBER/COLLABORATOR are the associations that imply write access.
+    # Deliberately excluded: CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE.
     if: >-
       (github.event_name == 'issue_comment' &&
        contains(github.event.comment.body, '@codex') &&
-       github.event.comment.user.login != 'github-actions[bot]') ||
+       github.event.comment.user.login != 'github-actions[bot]' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
       (github.event_name == 'pull_request_review_comment' &&
        contains(github.event.comment.body, '@codex') &&
-       github.event.comment.user.login != 'github-actions[bot]') ||
+       github.event.comment.user.login != 'github-actions[bot]' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
       (github.event_name == 'issues' &&
-       contains(github.event.issue.body, '@codex'))
+       contains(github.event.issue.body, '@codex') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

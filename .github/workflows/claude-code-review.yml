@@ -9,7 +9,13 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  # contents: read is sufficient (narrowed 2026-07-29). The reviewer checks the
+  # PR out and reads it; it never pushes a commit or a branch. Its agent tools
+  # are workspace Write plus read-only gh/git inspection, and its outputs are PR
+  # comments and a check run — pull-requests/issues/checks scopes, not contents.
+  # Dropping the write grant shrinks what a prompt injection in PR text could
+  # reach on these public repositories.
+  contents: read
   pull-requests: write
   issues: write
   actions: read
