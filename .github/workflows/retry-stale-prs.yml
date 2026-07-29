@@ -10,6 +10,9 @@ permissions:
   pull-requests: write
   issues: write
   checks: read
+  # actions: read powers ONLY the held-run detector below (listing workflow
+  # runs in status 'action_required'). Read-only; grants no new write surface.
+  actions: read
 
 jobs:
   retry-stale:
@@ -24,6 +27,91 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
+
+      # Since 2026-07-28 GitHub automatically holds workflow runs it judges
+      # potentially malicious until a collaborator with write access approves
+      # them in an authenticated web session. It is default-on, has no opt-out,
+      # and applies to public repositories on github.com. A held run never
+      # reports a check result, so a fail-closed gate simply never goes green:
+      # autopilot silently becomes a manual queue with nothing naming the cause.
+      # This detector surfaces that state; approval itself is necessarily human.
+      # It is advisory and must never fail this workflow.
+      - name: Surface workflow runs held for approval
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const MARKER = '<!-- held-run-notice -->';
+
+            let runs = [];
+            try {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, status: 'action_required', per_page: 100
+              });
+              runs = data.workflow_runs || [];
+            } catch (error) {
+              core.warning(`Could not list held workflow runs: ${error.message}`);
+              return;
+            }
+
+            if (runs.length === 0) {
+              core.info('No workflow runs are held for approval.');
+              return;
+            }
+
+            core.warning(
+              `${runs.length} workflow run(s) are HELD FOR APPROVAL and will never report a check ` +
+              'result until a write-access collaborator approves them in the GitHub web UI.'
+            );
+
+            const lines = [
+              `## ${runs.length} workflow run(s) held for approval`,
+              '',
+              'These runs are blocked by GitHub\'s automatic malicious-workflow protection',
+              '(default-on for public repositories since 2026-07-28). They cannot be approved',
+              'by automation — a collaborator with write access must approve each one in an',
+              'authenticated web session.',
+              '',
+              '| Workflow | Branch | Run |',
+              '| --- | --- | --- |'
+            ];
+            for (const run of runs) {
+              lines.push(`| ${run.name} | \`${run.head_branch || 'unknown'}\` | [${run.id}](${run.html_url}) |`);
+            }
+            await core.summary.addRaw(lines.join('\n')).write();
+
+            // Comment once per held run on its PR, if one is resolvable, so the
+            // stall is visible where the work is rather than only in this log.
+            for (const run of runs) {
+              const prNumber = (run.pull_requests || [])[0]?.number;
+              if (!prNumber) continue;
+              try {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner, repo, issue_number: prNumber, per_page: 100
+                });
+                const already = comments.some(
+                  c => c.body && c.body.includes(MARKER) && c.body.includes(String(run.id))
+                );
+                if (already) continue;
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber,
+                  body: [
+                    MARKER,
+                    `**Workflow run [${run.id}](${run.html_url}) (${run.name}) is held for approval.**`,
+                    '',
+                    'GitHub\'s automatic malicious-workflow protection is holding this run, so it',
+                    'will never publish a check result and the automation gate cannot go green.',
+                    'Automation cannot clear this: approve the run in the Actions tab, or close',
+                    'and reopen the pull request to start a fresh run.'
+                  ].join('\n')
+                });
+              } catch (error) {
+                core.warning(`Could not annotate PR #${prNumber} for held run ${run.id}: ${error.message}`);
+              }
+            }
 
       - name: Process stale PRs safely
         uses: actions/github-script@v8

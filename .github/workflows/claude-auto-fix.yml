@@ -67,6 +67,36 @@ jobs:
 
             const prNumber = prs[0].number;
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+
+            // FORK GUARD (2026-07-29). This workflow runs on workflow_run, which
+            // executes in BASE-repo context with repository secrets and
+            // contents: write. It later checks out `pr_branch`, taken from
+            // pr.head.ref. Because that checkout passes no `repository:` input,
+            // a fork's branch name resolves against THIS repository, not the
+            // fork — so fork code was never executed here. The real hazards are
+            // that the step fails confusingly, or that a fork branch name
+            // happens to match an unrelated base branch and the wrong tree is
+            // checked out and then auto-fixed.
+            //
+            // Skip fork PRs deliberately, with a reason in the log, instead of
+            // relying on checkout semantics to skip them by accident. This is
+            // also the pattern actions/checkout v7 hardening exists to enforce
+            // for workflow_run; the repo pins @v6 today, so a future major bump
+            // must not be what first surfaces this.
+            const headRepoFullName = pr.head.repo && pr.head.repo.full_name;
+            if (headRepoFullName !== `${owner}/${repo}`) {
+              core.warning(
+                `PR #${prNumber} head is ${headRepoFullName || 'an unknown/deleted repository'}, not ${owner}/${repo}. ` +
+                'Fork pull requests are never auto-fixed or auto-merged by this workflow.'
+              );
+              core.setOutput('has_pr', 'true');
+              core.setOutput('pr_number', String(prNumber));
+              core.setOutput('should_run', 'false');
+              core.setOutput('should_evaluate_merge', 'false');
+              core.setOutput('reason', 'fork_pr');
+              return;
+            }
+
             const labelNames = (pr.labels || []).map(label => label.name);
             const hasNoAutoFix = labelNames.includes('no-auto-fix');
             const hasNoAutoMerge = labelNames.includes('no-auto-merge');
